@@ -1,0 +1,6 @@
+carelink_profile
+exports
+rapports
+venv
+/**/*.csv
+/**/*.pdf
