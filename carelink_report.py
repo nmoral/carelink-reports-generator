@@ -81,6 +81,21 @@ def _gmi(mean: float) -> float:
     return 3.31 + 0.02392 * mean
 
 
+_MOIS_FR = ["", "janvier", "février", "mars", "avril", "mai", "juin",
+            "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def _month_label(m: str) -> str:
+    """'2026-01' -> 'janvier 2026'. 'GLOBAL' reste 'GLOBAL'."""
+    if m == "GLOBAL":
+        return "GLOBAL"
+    try:
+        year, month = m.split("-")
+        return f"{_MOIS_FR[int(month)]} {year}"
+    except Exception:
+        return m
+
+
 def _agp(sg: pd.DataFrame) -> pd.DataFrame:
     bins = np.arange(0, 24.5, 0.5)
     cut = pd.cut(sg["hh"], bins, labels=bins[:-1], include_lowest=True).astype(float)
@@ -96,7 +111,7 @@ def monthly_glucose_table(sg: pd.DataFrame) -> pd.DataFrame:
     for m in _months(sg) + ["GLOBAL"]:
         x = (sg if m == "GLOBAL" else sg[sg["month"] == m])["SG"].values
         rows.append({
-            "Mois": m, "Lectures": len(x), "Moyenne": round(x.mean()),
+            "Mois": _month_label(m), "Lectures": len(x), "Moyenne": round(x.mean()),
             "GMI (%)": round(_gmi(x.mean()), 1),
             "Hypo <70 (%)": round((x < LOW).mean() * 100, 1),
             "Cible (%)": round(((x >= LOW) & (x <= HIGH)).mean() * 100, 1),
@@ -111,7 +126,7 @@ def hourly_dose_table(bol: pd.DataFrame) -> pd.DataFrame:
         sub = bol if m == "GLOBAL" else bol[bol["month"] == m]
         n_days = max(sub["dt"].dt.date.nunique(), 1)
         per_hour = sub.groupby("hour")["bolus"].sum().reindex(range(24), fill_value=0)
-        out[m] = (per_hour / n_days).round(2).values
+        out[_month_label(m)] = (per_hour / n_days).round(2).values
     return out
 
 
@@ -167,13 +182,37 @@ def fig_agp(sg: pd.DataFrame) -> plt.Figure:
     fig.tight_layout(); return fig
 
 
+def fig_agp_monthly(sg: pd.DataFrame) -> plt.Figure:
+    months = _months(sg)
+    ncols = 2
+    nrows = int(np.ceil(len(months) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11, 3.1 * nrows + 0.6),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+    for ax, m in zip(axes, months):
+        p = _agp(sg[sg["month"] == m])
+        ax.axhspan(LOW, HIGH, color="#c8e6c9", alpha=.5)
+        ax.axhline(LOW, color=COL_HYPO, ls="--", lw=.7)
+        ax.axhline(HIGH, color=COL_HYPER, ls="--", lw=.7)
+        ax.fill_between(p.x, p.p10, p.p90, color="#90caf9", alpha=.45)
+        ax.fill_between(p.x, p.p25, p.p75, color="#1e88e5", alpha=.45)
+        ax.plot(p.x, p["med"], color="#0d47a1", lw=2)
+        ax.set_xlim(0, 24); ax.set_ylim(40, 330); ax.set_xticks(range(0, 25, 6))
+        ax.set_title(_month_label(m), fontsize=10, fontweight="bold"); ax.grid(alpha=.2)
+    for ax in axes[len(months):]:
+        ax.axis("off")
+    fig.suptitle("Profil glycémique journalier (AGP) — par mois", fontweight="bold", fontsize=14)
+    fig.supxlabel("Heure"); fig.supylabel("Glycémie (mg/dL)")
+    fig.tight_layout(rect=(0, 0, 1, 0.96)); return fig
+
+
 def fig_monthly_comparison(sg: pd.DataFrame) -> plt.Figure:
     months = _months(sg)
     colors = plt.cm.viridis(np.linspace(0, .9, len(months)))
     fig, ax = plt.subplots(figsize=(11, 7))
     ax.axhspan(LOW, HIGH, color="#c8e6c9", alpha=.4); ax.axhline(LOW, color=COL_HYPO, ls="--", lw=.8)
     for m, c in zip(months, colors):
-        p = _agp(sg[sg["month"] == m]); ax.plot(p.x, p["med"], color=c, lw=2, label=m)
+        p = _agp(sg[sg["month"] == m]); ax.plot(p.x, p["med"], color=c, lw=2, label=_month_label(m))
     ax.set_xlim(0, 24); ax.set_ylim(40, 300); ax.set_xticks(range(0, 25, 2))
     ax.set_xlabel("Heure"); ax.set_ylabel("Glycémie médiane (mg/dL)")
     ax.set_title("Comparaison mensuelle — profil médian par mois", fontweight="bold")
@@ -193,6 +232,7 @@ def fig_mean_evolution(sg: pd.DataFrame) -> plt.Figure:
                     ha="center", va="bottom", fontsize=9)
     ax.set_ylabel("Glycémie moyenne (mg/dL)")
     ax.set_title("Évolution de la glycémie moyenne par mois", fontweight="bold")
+    ax.tick_params(axis="x", labelrotation=20)
     ax.legend(); ax.grid(alpha=.2, axis="y"); fig.tight_layout(); return fig
 
 
@@ -251,6 +291,7 @@ def main() -> int:
 
     pages = [("synthese", fig_tables(sg)),
              ("profil_glycemique_journalier", fig_agp(sg)),
+             ("profil_agp_mensuel", fig_agp_monthly(sg)),
              ("comparaison_mensuelle", fig_monthly_comparison(sg)),
              ("evolution_moyennes", fig_mean_evolution(sg)),
              ("parts_tir_camemberts", fig_tir_pies(sg))]
