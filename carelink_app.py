@@ -106,11 +106,13 @@ def main() -> int:
     sys.argv = ["report", str(glycemie), "--out", str(rapports)]
     carelink_report.main()
 
+    html = rapports / "rapport.html"
     pdf = rapports / "rapport.pdf"
-    print(f"\n✓ Terminé.\n  Données : {glycemie}\n  Rapport : {pdf}")
+    print(f"\n✓ Terminé.\n  Données      : {glycemie}\n"
+          f"  Rapport HTML : {html}\n  Rapport PDF  : {pdf}")
     try:
-        if os.name == "nt" and pdf.exists():
-            os.startfile(str(pdf))  # ouvre le PDF sous Windows
+        if os.name == "nt" and html.exists():
+            os.startfile(str(html))  # ouvre le rapport HTML dans le navigateur
     except Exception:
         pass
 
