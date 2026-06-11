@@ -275,6 +275,96 @@ def fig_hourly_doses(bol: pd.DataFrame) -> plt.Figure:
     ax.legend(fontsize=8, title="Mois"); ax.grid(alpha=.2); fig.tight_layout(); return fig
 
 
+CHART_TITLES = {
+    "profil_glycemique_journalier": "Profil glycémique journalier (AGP) — global",
+    "profil_agp_mensuel": "Profil glycémique journalier (AGP) — par mois",
+    "comparaison_mensuelle": "Comparaison mensuelle",
+    "evolution_moyennes": "Évolution de la glycémie moyenne",
+    "parts_tir_camemberts": "Répartition hypo / cible / hyper",
+    "doses_par_heure": "Dose de bolus moyenne par heure",
+}
+
+HTML_CSS = """
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+       margin: 0; background: #eef1f5; color: #1b2733; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 60px; }
+header h1 { font-size: 26px; margin: 0 0 4px; color: #0d3b66; }
+header .sub { color: #5b6b7b; margin: 0 0 20px; }
+.card { background: #fff; border: 1px solid #e3e8ee; border-radius: 12px;
+        padding: 18px 20px; margin: 18px 0; box-shadow: 0 1px 3px rgba(20,40,70,.05); }
+.card h2 { font-size: 18px; margin: 0 0 14px; color: #0d3b66; }
+img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+table.data { border-collapse: collapse; width: 100%; font-size: 14px; }
+table.data th { background: #1565c0; color: #fff; padding: 8px 10px; text-align: center; font-weight: 600; }
+table.data td { padding: 7px 10px; text-align: center; border-bottom: 1px solid #eef1f5; }
+table.data tbody tr:nth-child(even) { background: #f8fafc; }
+table.data .glob { background: #e3f2fd; font-weight: 700; }
+table.data tr.glob-row td { background: #e3f2fd; font-weight: 700; }
+footer { color: #8a97a5; font-size: 12px; text-align: center; margin-top: 30px; }
+@media print { body { background: #fff; } .card { box-shadow: none; break-inside: avoid; } }
+"""
+
+
+def _fig_to_b64(fig: plt.Figure) -> str:
+    import base64
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("ascii")
+
+
+def _html_table(df: pd.DataFrame) -> str:
+    cols = list(df.columns)
+    gcol = cols.index("GLOBAL") if "GLOBAL" in cols else None
+    out = ["<table class='data'><thead><tr>"]
+    for j, c in enumerate(cols):
+        cls = " class='glob'" if gcol is not None and j == gcol else ""
+        out.append(f"<th{cls}>{c}</th>")
+    out.append("</tr></thead><tbody>")
+    for _, row in df.iterrows():
+        rcls = " class='glob-row'" if str(row.iloc[0]) == "GLOBAL" else ""
+        out.append(f"<tr{rcls}>")
+        for j, c in enumerate(cols):
+            cls = " class='glob'" if gcol is not None and j == gcol else ""
+            out.append(f"<td{cls}>{row[c]}</td>")
+        out.append("</tr>")
+    out.append("</tbody></table>")
+    return "".join(out)
+
+
+def write_html(out: Path, subtitle: str, pages: list, sg: pd.DataFrame,
+               bol: pd.DataFrame) -> Path:
+    """Construit un rapport HTML autonome (images base64 + tableaux HTML)."""
+    blocks = []
+    for name, fig in pages:
+        if name == "synthese":
+            blocks.append(("Synthèse mensuelle", _html_table(monthly_glucose_table(sg))))
+        elif name == "doses_par_heure_table":
+            blocks.append(("Doses de bolus moyennes par heure",
+                           _html_table(hourly_dose_table(bol))))
+        else:
+            title = CHART_TITLES.get(name, name)
+            blocks.append((title, f"<img alt=\"{title}\" "
+                                  f"src=\"data:image/png;base64,{_fig_to_b64(fig)}\">"))
+
+    html = [f"<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'>",
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+            "<title>Rapport glycémie &amp; insuline</title>",
+            f"<style>{HTML_CSS}</style></head><body><div class='wrap'>",
+            f"<header><h1>Rapport glycémie &amp; insuline</h1>",
+            f"<p class='sub'>{subtitle}</p></header>"]
+    for title, content in blocks:
+        html.append(f"<section class='card'><h2>{title}</h2>{content}</section>")
+    html.append("<footer>Généré automatiquement à partir des données CareLink.</footer>")
+    html.append("</div></body></html>")
+
+    path = out / "rapport.html"
+    path.write_text("".join(html), encoding="utf-8")
+    return path
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Rapports glycémie + insuline (PDF) depuis un CSV CareLink.")
     ap.add_argument("csv", help="Fichier CSV fusionné (ex. glycemie.csv)")
@@ -306,6 +396,11 @@ def main() -> int:
     if args.png:
         for name, fig in pages:
             fig.savefig(out / f"{name}.png", dpi=140, bbox_inches="tight")
+
+    subtitle = (f"{df['dt'].min().date()} au {df['dt'].max().date()} — "
+                f"{len(sg)} lectures de glycémie")
+    html_path = write_html(out, subtitle, pages, sg, bol)
+
     for _, fig in pages:
         plt.close(fig)
 
@@ -313,8 +408,9 @@ def main() -> int:
         monthly_glucose_table(sg).to_excel(xl, sheet_name="Glycémie mensuelle", index=False)
         hourly_dose_table(bol).to_excel(xl, sheet_name="Doses par heure", index=False)
 
-    print(f"\n-> PDF : {pdf_path}")
-    print(f"-> Tables : {out / 'rapport_synthese.xlsx'}")
+    print(f"\n-> HTML  : {html_path}")
+    print(f"-> PDF   : {pdf_path}")
+    print(f"-> Tables: {out / 'rapport_synthese.xlsx'}")
     return 0
 
 
