@@ -20,6 +20,12 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+# En mode exe (--onefile), le dossier temporaire d'extraction (_MEIxxxx) change à
+# chaque lancement et ne contient pas le navigateur. On force donc Playwright à
+# installer ET retrouver Firefox dans un dossier persistant et inscriptible.
+_BROWSERS_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "carelink-browsers"
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_BROWSERS_DIR))
+
 import download_carelink
 import merge_carelink
 import carelink_report
@@ -35,15 +41,21 @@ def ensure_firefox() -> None:
             return
     except Exception:
         pass
-    print("Installation de Firefox (premier lancement, ~80 Mo)…")
+    print(f"Installation de Firefox (premier lancement, ~80 Mo) dans {_BROWSERS_DIR}…")
     try:
         from playwright._impl._driver import compute_driver_executable, get_driver_env
         driver = compute_driver_executable()
         cmd = list(driver) if isinstance(driver, (list, tuple)) else [driver]
-        subprocess.run(cmd + ["install", "firefox"], env=get_driver_env(), check=True)
+        env = get_driver_env()
+        env["PLAYWRIGHT_BROWSERS_PATH"] = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+        subprocess.run(cmd + ["install", "firefox"], env=env, check=True)
     except Exception as e:  # noqa: BLE001
-        print(f"  ! Installation auto échouée ({e}).")
-        print("  Ouvre une invite de commande et lance : playwright install firefox")
+        raise RuntimeError(
+            f"Échec de l'installation de Firefox : {e}\n"
+            f"À tester manuellement :\n"
+            f'  set PLAYWRIGHT_BROWSERS_PATH={_BROWSERS_DIR}\n'
+            f"  playwright install firefox"
+        ) from e
 
 
 def ask(prompt: str, default: str) -> str:
@@ -107,4 +119,21 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import multiprocessing
+    multiprocessing.freeze_support()   # indispensable pour les exe --onefile
+    try:
+        rc = main()
+    except SystemExit:
+        raise
+    except BaseException:               # capture tout plantage pour qu'il reste lisible
+        import traceback
+        print("\n" + "=" * 62)
+        print("UNE ERREUR S'EST PRODUITE :")
+        print("=" * 62)
+        traceback.print_exc()
+        try:
+            input("\nAppuie sur Entrée pour quitter… (copie le message ci-dessus)")
+        except EOFError:
+            pass
+        rc = 1
+    raise SystemExit(rc)
