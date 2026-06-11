@@ -1,0 +1,43 @@
+name: Build Windows EXE
+
+# Se déclenche manuellement (bouton "Run workflow") ou sur un tag de version v*
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Compiler l'exécutable
+        run: >
+          pyinstaller --onefile --name CareLink
+          --collect-all playwright
+          carelink_app.py
+
+      - name: Publier l'exécutable en artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CareLink-windows
+          path: dist/CareLink.exe
+
+      # Bonus : si tu pousses un tag v1.0, l'exe est aussi attaché à une Release.
+      - name: Créer une Release (sur tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/CareLink.exe
