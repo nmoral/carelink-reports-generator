@@ -275,26 +275,28 @@ def fig_hourly_doses(bol: pd.DataFrame) -> plt.Figure:
     ax.legend(fontsize=8, title="Mois"); ax.grid(alpha=.2); fig.tight_layout(); return fig
 
 
-CHART_TITLES = {
-    "profil_glycemique_journalier": "Profil glycémique journalier (AGP) — global",
-    "profil_agp_mensuel": "Profil glycémique journalier (AGP) — par mois",
-    "comparaison_mensuelle": "Comparaison mensuelle",
-    "evolution_moyennes": "Évolution de la glycémie moyenne",
-    "parts_tir_camemberts": "Répartition hypo / cible / hyper",
-    "doses_par_heure": "Dose de bolus moyenne par heure",
-}
+PALETTE = ["#1565c0", "#00897b", "#6a1b9a", "#ef6c00", "#2e7d32", "#5d4037",
+           "#0277bd", "#c2185b", "#558b2f", "#4527a0", "#00838f", "#9e9d24"]
 
 HTML_CSS = """
 * { box-sizing: border-box; }
-body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-       margin: 0; background: #eef1f5; color: #1b2733; }
-.wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 60px; }
+body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; background: #eef1f5; color: #1b2733; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
 header h1 { font-size: 26px; margin: 0 0 4px; color: #0d3b66; }
 header .sub { color: #5b6b7b; margin: 0 0 20px; }
-.card { background: #fff; border: 1px solid #e3e8ee; border-radius: 12px;
-        padding: 18px 20px; margin: 18px 0; box-shadow: 0 1px 3px rgba(20,40,70,.05); }
-.card h2 { font-size: 18px; margin: 0 0 14px; color: #0d3b66; }
-img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+.card { background: #fff; border: 1px solid #e3e8ee; border-radius: 12px; padding: 18px 20px; margin: 18px 0; box-shadow: 0 1px 3px rgba(20,40,70,.05); }
+.card h2 { font-size: 18px; margin: 0 0 6px; color: #0d3b66; }
+.hint { color: #8a97a5; font-size: 12px; margin: 0 0 10px; }
+.plot { width: 100%; height: 430px; }
+.plot-sm { width: 100%; height: 250px; }
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.grid.pies { grid-template-columns: repeat(4, 1fr); }
+.chart-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.chart-row .plot { flex: 1 1 560px; }
+.legend { flex: 0 0 168px; display: flex; flex-direction: column; gap: 5px; padding-top: 8px; }
+.leg-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 6px; border-radius: 6px; cursor: pointer; transition: background .15s; }
+.leg-item:hover { background: #eef4fb; }
+.leg-item i { width: 16px; height: 4px; border-radius: 2px; display: inline-block; flex: none; }
 table.data { border-collapse: collapse; width: 100%; font-size: 14px; }
 table.data th { background: #1565c0; color: #fff; padding: 8px 10px; text-align: center; font-weight: 600; }
 table.data td { padding: 7px 10px; text-align: center; border-bottom: 1px solid #eef1f5; }
@@ -302,17 +304,152 @@ table.data tbody tr:nth-child(even) { background: #f8fafc; }
 table.data .glob { background: #e3f2fd; font-weight: 700; }
 table.data tr.glob-row td { background: #e3f2fd; font-weight: 700; }
 footer { color: #8a97a5; font-size: 12px; text-align: center; margin-top: 30px; }
-@media print { body { background: #fff; } .card { box-shadow: none; break-inside: avoid; } }
+@media (max-width: 760px) { .grid.pies { grid-template-columns: 1fr 1fr; } }
 """
 
 
-def _fig_to_b64(fig: plt.Figure) -> str:
-    import base64
-    import io
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("ascii")
+def _agp_payload(sgsub: pd.DataFrame) -> dict:
+    p = _agp(sgsub)
+
+    def col(name):
+        return [None if pd.isna(v) else round(float(v), 1) for v in p[name]]
+
+    return {"x": [round(float(v), 2) for v in p["x"]],
+            "p10": col("p10"), "p25": col("p25"), "med": col("med"),
+            "p75": col("p75"), "p90": col("p90")}
+
+
+# Script Plotly. DATA est injecté via .replace (pas de f-string : le JS contient
+# beaucoup d'accolades).
+JS_TEMPLATE = """
+const DATA = /*DATA*/;
+const BASE = {};
+const CFG = {responsive:true, scrollZoom:true, displaylogo:false,
+            modeBarButtonsToRemove:['select2d','lasso2d','autoScale2d']};
+const CFG_STATIC = {responsive:true, displaylogo:false,
+            modeBarButtonsToRemove:['select2d','lasso2d','zoom2d','pan2d','zoomIn2d','zoomOut2d','autoScale2d']};
+
+function agpTraces(a) {
+  const hidden = {mode:'lines', line:{width:0}, hoverinfo:'skip', showlegend:false};
+  return [
+    Object.assign({x:a.x, y:a.p90}, hidden),
+    {x:a.x, y:a.p10, mode:'lines', line:{width:0}, fill:'tonexty',
+     fillcolor:'rgba(144,202,249,0.45)', hoverinfo:'skip', showlegend:false},
+    Object.assign({x:a.x, y:a.p75}, hidden),
+    {x:a.x, y:a.p25, mode:'lines', line:{width:0}, fill:'tonexty',
+     fillcolor:'rgba(30,136,229,0.50)', hoverinfo:'skip', showlegend:false},
+    {x:a.x, y:a.med, mode:'lines', line:{color:'#0d47a1', width:2.5}, name:'Mediane',
+     hovertemplate:'%{x}h \u2014 %{y} mg/dL<extra></extra>'}
+  ];
+}
+function agpLayout(title, big) {
+  return {
+    title:{text:title, font:{size:13}, x:0.5},
+    margin:{l:44, r:12, t:34, b:30},
+    xaxis:{range:[0,24], dtick:6, title: big ? 'Heure' : '', ticksuffix:'h'},
+    yaxis:{range:[40,330], title: big ? 'mg/dL' : ''},
+    hovermode:'x', showlegend:false,
+    shapes:[
+      {type:'rect', xref:'x', yref:'y', x0:0, x1:24, y0:70, y1:180,
+       fillcolor:'rgba(200,230,201,0.5)', line:{width:0}, layer:'below'},
+      {type:'line', x0:0, x1:24, y0:70, y1:70, line:{color:'#e53935', width:1, dash:'dash'}},
+      {type:'line', x0:0, x1:24, y0:180, y1:180, line:{color:'#fb8c00', width:1, dash:'dash'}}
+    ]
+  };
+}
+function highlight(divId, idx) {
+  const base = BASE[divId];
+  const w = base.map((b, k) => k === idx ? Math.max(b, 4) : 1.2);
+  const o = base.map((b, k) => k === idx ? 1 : 0.18);
+  Plotly.restyle(divId, {'line.width': w, 'opacity': o});
+}
+function resetLines(divId) {
+  const base = BASE[divId];
+  Plotly.restyle(divId, {'line.width': base, 'opacity': base.map(() => 1)});
+}
+function buildLegend(legId, divId, series, hasGlobal) {
+  const leg = document.getElementById(legId);
+  leg.innerHTML = '';
+  const add = (label, color, idx) => {
+    const el = document.createElement('span');
+    el.className = 'leg-item';
+    el.innerHTML = '<i style="background:' + color + '"></i>' + label;
+    el.onmouseenter = () => highlight(divId, idx);
+    el.onmouseleave = () => resetLines(divId);
+    leg.appendChild(el);
+  };
+  series.forEach((s, i) => add(s.label, s.color, i));
+  if (hasGlobal) add('GLOBAL', '#c62828', series.length);
+}
+function multiLine(divId, legId, xvals, series, globalY, layout, xunit, yunit) {
+  const traces = [];
+  const widths = [];
+  series.forEach(s => {
+    traces.push({x:xvals, y:s.y, mode:'lines', name:s.label, line:{color:s.color, width:2},
+      showlegend:false, hovertemplate:s.label + ' \u2014 %{x}' + xunit + ' : %{y}' + yunit + '<extra></extra>'});
+    widths.push(2);
+  });
+  if (globalY) {
+    traces.push({x:xvals, y:globalY, mode:'lines', name:'GLOBAL', line:{color:'#c62828', width:3},
+      showlegend:false, hovertemplate:'GLOBAL \u2014 %{x}' + xunit + ' : %{y}' + yunit + '<extra></extra>'});
+    widths.push(3);
+  }
+  BASE[divId] = widths;
+  Plotly.newPlot(divId, traces, layout, CFG);
+  buildLegend(legId, divId, series, !!globalY);
+}
+
+Plotly.newPlot('agp_global', agpTraces(DATA.agp_global), agpLayout('', true), CFG);
+
+DATA.agp_monthly.forEach((d, i) => {
+  Plotly.newPlot('agp_m' + i, agpTraces(d.agp), agpLayout(d.label, false), CFG);
+});
+
+multiLine('comp', 'comp_leg', DATA.comparison.x, DATA.comparison.series, null, {
+  margin:{l:44, r:12, t:10, b:34},
+  xaxis:{range:[0,24], dtick:6, title:'Heure', ticksuffix:'h'},
+  yaxis:{range:[40,300], title:'mg/dL'},
+  hovermode:'closest', showlegend:false,
+  shapes:[{type:'rect', x0:0, x1:24, y0:70, y1:180, fillcolor:'rgba(200,230,201,0.45)', line:{width:0}, layer:'below'}]
+}, 'h', ' mg/dL');
+
+(function() {
+  const m = DATA.mean_evol;
+  Plotly.newPlot('mean_evol', [{
+    type:'bar', x:m.labels, y:m.means, marker:{color:'#1e88e5'},
+    hovertemplate:'%{x} \u2014 %{y} mg/dL<extra></extra>'
+  }], {
+    margin:{l:44, r:12, t:14, b:70},
+    yaxis:{title:'mg/dL'}, xaxis:{tickangle:-20},
+    shapes:[
+      {type:'rect', xref:'paper', x0:0, x1:1, y0:70, y1:180, fillcolor:'rgba(200,230,201,0.4)', line:{width:0}, layer:'below'},
+      {type:'line', xref:'paper', x0:0, x1:1, y0:m.global, y1:m.global, line:{color:'#c62828', width:2, dash:'dash'}}
+    ],
+    annotations:[{xref:'paper', x:0.01, y:m.global, text:'Moyenne globale : ' + m.global, showarrow:false, yshift:10, font:{color:'#c62828', size:12}, xanchor:'left'}]
+  }, CFG_STATIC);
+})();
+
+DATA.tir.forEach((t, i) => {
+  Plotly.newPlot('pie' + i, [{
+    type:'pie', values:[t.hypo, t.cible, t.hyper], labels:['Hypo', 'Cible', 'Hyper'],
+    marker:{colors:['#e53935', '#43a047', '#fb8c00'], line:{color:'#fff', width:1.5}},
+    textinfo:'percent', textfont:{size:11}, sort:false,
+    hovertemplate:'%{label} : %{value}%<extra></extra>'
+  }], {
+    margin:{l:6, r:6, t:28, b:6}, showlegend:false,
+    title:{text:t.label, font:{size:12, color: t.label === 'GLOBAL' ? '#0d47a1' : '#1b2733'}}
+  }, CFG_STATIC);
+});
+
+if (DATA.doses) {
+  multiLine('doses', 'doses_leg', DATA.doses.hours, DATA.doses.series, DATA.doses.global, {
+    margin:{l:44, r:12, t:10, b:34},
+    xaxis:{title:'Heure', dtick:2, ticksuffix:'h', range:[0,23]},
+    yaxis:{title:'U', rangemode:'tozero'},
+    hovermode:'closest', showlegend:false
+  }, 'h', ' U');
+}
+"""
 
 
 def _html_table(df: pd.DataFrame) -> str:
@@ -334,34 +471,85 @@ def _html_table(df: pd.DataFrame) -> str:
     return "".join(out)
 
 
-def write_html(out: Path, subtitle: str, pages: list, sg: pd.DataFrame,
-               bol: pd.DataFrame) -> Path:
-    """Construit un rapport HTML autonome (images base64 + tableaux HTML)."""
-    blocks = []
-    for name, fig in pages:
-        if name == "synthese":
-            blocks.append(("Synthèse mensuelle", _html_table(monthly_glucose_table(sg))))
-        elif name == "doses_par_heure_table":
-            blocks.append(("Doses de bolus moyennes par heure",
-                           _html_table(hourly_dose_table(bol))))
-        else:
-            title = CHART_TITLES.get(name, name)
-            blocks.append((title, f"<img alt=\"{title}\" "
-                                  f"src=\"data:image/png;base64,{_fig_to_b64(fig)}\">"))
+def write_html(out: Path, subtitle: str, sg: pd.DataFrame, bol: pd.DataFrame) -> Path:
+    """Construit un rapport HTML interactif (graphiques Plotly + tableaux HTML)."""
+    import json
 
-    html = [f"<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'>",
-            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-            "<title>Rapport glycémie &amp; insuline</title>",
-            f"<style>{HTML_CSS}</style></head><body><div class='wrap'>",
-            f"<header><h1>Rapport glycémie &amp; insuline</h1>",
-            f"<p class='sub'>{subtitle}</p></header>"]
-    for title, content in blocks:
-        html.append(f"<section class='card'><h2>{title}</h2>{content}</section>")
-    html.append("<footer>Généré automatiquement à partir des données CareLink.</footer>")
-    html.append("</div></body></html>")
+    months = _months(sg)
+    palette = [PALETTE[i % len(PALETTE)] for i in range(len(months))]
 
+    agp_global = _agp_payload(sg)
+    agp_monthly = [{"label": _month_label(m), "agp": _agp_payload(sg[sg["month"] == m])}
+                   for m in months]
+    comparison = {"x": agp_global["x"],
+                  "series": [{"label": _month_label(m), "color": palette[i],
+                              "y": _agp_payload(sg[sg["month"] == m])["med"]}
+                             for i, m in enumerate(months)]}
+    mt = monthly_glucose_table(sg)
+    mean_evol = {"labels": [r for r in mt["Mois"] if r != "GLOBAL"],
+                 "means": [int(v) for r, v in zip(mt["Mois"], mt["Moyenne"]) if r != "GLOBAL"],
+                 "global": int(mt.loc[mt["Mois"] == "GLOBAL", "Moyenne"].iloc[0])}
+    tir = [{"label": r["Mois"], "hypo": float(r["Hypo <70 (%)"]),
+            "cible": float(r["Cible (%)"]), "hyper": float(r["Hyper >180 (%)"])}
+           for _, r in mt.iterrows()]
+    doses = None
+    if not bol.empty:
+        ht = hourly_dose_table(bol)
+        mcols = [c for c in ht.columns if c not in ("Heure", "GLOBAL")]
+        doses = {"hours": list(range(24)),
+                 "series": [{"label": c, "color": palette[i % len(palette)],
+                             "y": [float(v) for v in ht[c]]} for i, c in enumerate(mcols)],
+                 "global": [float(v) for v in ht["GLOBAL"]]}
+
+    data = {"agp_global": agp_global, "agp_monthly": agp_monthly,
+            "comparison": comparison, "mean_evol": mean_evol, "tir": tir, "doses": doses}
+    js = JS_TEMPLATE.replace("/*DATA*/", json.dumps(data, ensure_ascii=False))
+
+    agp_cells = "".join(f"<div id='agp_m{i}' class='plot-sm'></div>" for i in range(len(agp_monthly)))
+    pie_cells = "".join(f"<div id='pie{i}' class='plot-sm'></div>" for i in range(len(tir)))
+
+    sections = [
+        ("Synthèse mensuelle", _html_table(mt), None),
+        ("Profil glycémique journalier (AGP) — global",
+         "<div id='agp_global' class='plot'></div>",
+         "Glissez pour zoomer sur une zone · molette pour zoomer · double-clic pour réinitialiser"),
+        ("Profil glycémique journalier (AGP) — par mois",
+         f"<div class='grid'>{agp_cells}</div>",
+         "Chaque graphique est zoomable indépendamment"),
+        ("Comparaison mensuelle",
+         "<div class='chart-row'><div id='comp' class='plot'></div><div id='comp_leg' class='legend'></div></div>",
+         "Survolez un mois dans la légende pour mettre sa courbe en avant · zoom à la molette"),
+        ("Évolution de la glycémie moyenne",
+         "<div id='mean_evol' class='plot'></div>", None),
+        ("Répartition hypo / cible / hyper",
+         f"<div class='grid pies'>{pie_cells}</div>",
+         "Rouge = hypo (moins de 70) · vert = cible (70-180) · orange = hyper (plus de 180)"),
+    ]
+    if doses is not None:
+        sections.append(("Dose de bolus moyenne par heure",
+                         "<div class='chart-row'><div id='doses' class='plot'></div><div id='doses_leg' class='legend'></div></div>",
+                         "Survolez un mois dans la légende · bolus repas/correction (insuline auto SmartGuard exclue)"))
+        sections.append(("Doses de bolus moyennes par heure (détail)",
+                         _html_table(hourly_dose_table(bol)), None))
+
+    body = []
+    for title, content, hint in sections:
+        h = f"<p class='hint'>{hint}</p>" if hint else ""
+        body.append(f"<section class='card'><h2>{title}</h2>{h}{content}</section>")
+
+    html = (
+        "<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Rapport glycémie &amp; insuline</title>"
+        "<script src='https://cdn.plot.ly/plotly-2.35.2.min.js' charset='utf-8'></script>"
+        f"<style>{HTML_CSS}</style></head><body><div class='wrap'>"
+        f"<header><h1>Rapport glycémie &amp; insuline</h1><p class='sub'>{subtitle}</p></header>"
+        + "".join(body)
+        + "<footer>Généré automatiquement à partir des données CareLink.</footer></div>"
+        f"<script>{js}</script></body></html>"
+    )
     path = out / "rapport.html"
-    path.write_text("".join(html), encoding="utf-8")
+    path.write_text(html, encoding="utf-8")
     return path
 
 
@@ -399,7 +587,7 @@ def main() -> int:
 
     subtitle = (f"{df['dt'].min().date()} au {df['dt'].max().date()} — "
                 f"{len(sg)} lectures de glycémie")
-    html_path = write_html(out, subtitle, pages, sg, bol)
+    html_path = write_html(out, subtitle, sg, bol)
 
     for _, fig in pages:
         plt.close(fig)
