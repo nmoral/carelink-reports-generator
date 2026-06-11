@@ -1,6 +1,23 @@
-carelink_profile
-exports
-rapports
-venv
-/**/*.csv
-/**/*.pdf
+# --- Données générées localement (ne JAMAIS commiter) ---
+glycemie.csv
+fusion.csv
+exports/
+rapports/
+carelink_profile/        # contient des cookies / jetons de session
+*.csv                      # par sécurité : aucune donnée CareLink dans le dépôt
+*.pdf
+
+# --- Environnement Python ---
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# --- Artefacts PyInstaller ---
+build/
+dist/
+*.spec
+
+# --- Divers ---
+.DS_Store
+Thumbs.db
